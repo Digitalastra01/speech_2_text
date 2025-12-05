@@ -1,0 +1,20 @@
+[project]
+name = "speech-2-text"
+version = "0.1.0"
+description = "Real-time Speech-to-Text Web Application using FastAPI and Groq Whisper"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-socketio",
+    "jinja2",
+    "groq",
+    "python-dotenv",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "numpy"
+]
+
+[tool.setuptools]
+py-modules = ["main", "transcribe"]

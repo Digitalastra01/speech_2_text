@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+# Audio files
+*.wav
+*.webm
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Installer scripts
+get-pip.py
+
+
+uv.lock/

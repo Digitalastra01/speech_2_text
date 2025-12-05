@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Transcription</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+    <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Live Transcription</h1>
+            <p class="subtitle">Real-time speech-to-text powered by Groq & Whisper</p>
+        </header>
+
+        <div class="controls">
+            <button id="startButton" class="btn btn-primary" onclick="startMediaStream()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" y1="19" x2="12" y2="23"></line>
+                    <line x1="8" y1="23" x2="16" y2="23"></line>
+                </svg>
+                Start Recording
+            </button>
+            <button id="stopButton" class="btn btn-danger" onclick="stopRecording()" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                </svg>
+                Stop
+            </button>
+        </div>
+
+        <div class="status-indicator" id="statusIndicator">
+            <div class="dot"></div>
+            <span id="statusText">Ready to record</span>
+        </div>
+
+        <div class="transcription-box" id="transcriptionBox">
+            <div class="placeholder" id="placeholder">Transcription will appear here...</div>
+            <div id="transcriptionContent"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io.connect('http://localhost:{{ port }}', {
+            transports: ['websocket', 'polling']
+        });
+
+        let mediaRecorder;
+        let recordingInterval;
+        let language = "en";
+        let id = "room123";
+        const transcriptionContent = document.getElementById('transcriptionContent');
+        const placeholder = document.getElementById('placeholder');
+        const statusText = document.getElementById('statusText');
+        let globalStream;
+
+        // Polyfill for navigator.mediaDevices
+        if (navigator.mediaDevices === undefined) {
+            navigator.mediaDevices = {};
+        }
+
+        if (navigator.mediaDevices.getUserMedia === undefined) {
+            navigator.mediaDevices.getUserMedia = function (constraints) {
+                var getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.getUserMedia;
+
+                if (!getUserMedia) {
+                    return Promise.reject(new Error('getUserMedia is not implemented in this browser'));
+                }
+
+                return new Promise(function (resolve, reject) {
+                    getUserMedia.call(navigator, constraints, resolve, reject);
+                });
+            }
+        }
+
+        // Request microphone access immediately on load
+        window.addEventListener('load', async () => {
+            if (!window.isSecureContext) {
+                const msg = "Security Warning: You are accessing this site via an insecure context (likely 0.0.0.0 or an IP address). Microphone access will be blocked by the browser. Please use 'http://localhost:8000' instead.";
+                console.error(msg);
+                alert(msg);
+                updateStatus("Insecure Context - Use localhost", false);
+                return;
+            }
+
+            try {
+                console.log("Requesting microphone access on load...");
+                globalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                console.log("Microphone access granted.");
+                updateStatus("Ready to record", false);
+            } catch (err) {
+                console.error("Error accessing microphone: " + err.message);
+                updateStatus("Microphone Error", false);
+            }
+        });
+
+        function startMediaStream() {
+            if (!globalStream) {
+                console.error("No microphone stream available. Trying to request again...");
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        globalStream = stream;
+                        startRecordingInternal();
+                    })
+                    .catch(err => {
+                        console.error("Error accessing microphone: " + err.message);
+                        alert("Error accessing microphone: " + err.message);
+                    });
+                return;
+            }
+            startRecordingInternal();
+        }
+
+        function startRecordingInternal() {
+            let mimeType = "audio/webm; codecs=opus";
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                console.log(`MIME type ${mimeType} not supported, trying fallback...`);
+                mimeType = "audio/webm"; // Fallback
+            }
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                console.log(`MIME type ${mimeType} not supported either.`);
+                // Try generic
+                mimeType = "";
+            }
+
+            console.log(`Using MIME type: ${mimeType}`);
+
+            try {
+                mediaRecorder = new MediaRecorder(globalStream, { mimeType: mimeType });
+            } catch (e) {
+                console.error(`Failed to create MediaRecorder: ${e.message}`);
+                return;
+            }
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    console.log(`Sending audio chunk: ${e.data.size} bytes`);
+                    let blob = new Blob([e.data], { type: mimeType });
+                    blob.arrayBuffer().then((buffer) => {
+                        const audioData = new Uint8Array(buffer);
+                        socket.emit("audio_chunk", {
+                            audio_data: audioData,
+                            language: language,
+                            roomId: id,
+                        });
+                    });
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                updateStatus("Recording stopped", false);
+                console.log("MediaRecorder stopped.");
+            };
+
+            mediaRecorder.onerror = (e) => {
+                console.error(`MediaRecorder error: ${e.error}`);
+            };
+
+            mediaRecorder.start();
+            updateStatus("Recording...", true);
+            document.getElementById('startButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
+            placeholder.style.display = 'none';
+
+            recordingInterval = setInterval(() => {
+                if (mediaRecorder.state === "recording") {
+                    mediaRecorder.stop();
+                    mediaRecorder.start();
+                }
+            }, 3000);
+        }
+
+        function stopRecording() {
+            console.log("Stopping recording...");
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            }
+            clearInterval(recordingInterval);
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+        }
+
+        function updateStatus(text, isRecording) {
+            statusText.innerText = text;
+            if (isRecording) {
+                statusIndicator.classList.add('recording');
+            } else {
+                statusIndicator.classList.remove('recording');
+            }
+        }
+
+        socket.on("transcription", (data) => {
+            console.log(`Received transcription: ${data.text}`);
+            if (data.text) {
+                const p = document.createElement('p');
+                p.innerText = data.text;
+                transcriptionContent.appendChild(p);
+                // Auto-scroll to bottom
+                const box = document.getElementById('transcriptionBox');
+                box.scrollTop = box.scrollHeight;
+            }
+        });
+
+        socket.on("connect", () => {
+            console.log("Connected to server");
+            updateStatus("Connected - Ready to record", false);
+        });
+
+        socket.on("disconnect", (reason) => {
+            console.log(`Disconnected from server: ${reason}`);
+            updateStatus("Disconnected", false);
+        });
+
+        socket.on("connect_error", (error) => {
+            console.error(`Connection error: ${error}`);
+            updateStatus("Connection Error", false);
+        });
+
+        socket.on("error", (data) => {
+            console.error("Socket error:", data);
+        });
+    </script>
+
+</body>
+
+</html>
