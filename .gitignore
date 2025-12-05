@@ -23,4 +23,4 @@ Thumbs.db
 get-pip.py
 
 
-uv.lock/
+test_torchaudio.py
